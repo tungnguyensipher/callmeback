@@ -4,12 +4,16 @@
 
 ## Install
 
+macOs/Linux:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tungnguyensipher/callmeback/main/install.sh | bash
 ```
 
+Windows:
+
 ```powershell
-irm https://raw.githubusercontent.com/tungnguyensipher/callmeback/main/install.ps1 | iex
+powershell -c "irm https://raw.githubusercontent.com/tungnguyensipher/callmeback/main/install.ps1 | iex"
 ```
 
 Build from source:
