@@ -40,8 +40,46 @@ func TestAddAndListJobs(t *testing.T) {
 	if jobs[0].Profile != "default" {
 		t.Fatalf("jobs[0].Profile = %q, want %q", jobs[0].Profile, "default")
 	}
+	if jobs[0].MaxRuns != nil {
+		t.Fatalf("jobs[0].MaxRuns = %v, want nil", *jobs[0].MaxRuns)
+	}
+	if jobs[0].ScheduledRuns != 0 {
+		t.Fatalf("jobs[0].ScheduledRuns = %d, want %d", jobs[0].ScheduledRuns, 0)
+	}
 	if strings.Join(jobs[0].Command, " ") != "echo hello" {
 		t.Fatalf("jobs[0].Command = %v, want %q", jobs[0].Command, "echo hello")
+	}
+}
+
+func TestAddJobWithMaxRuns(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "callmeback.db")
+
+	if _, stderr, err := runCLI(t, dbPath, "add", "hourly", "--interval", "1h", "--max-runs", "3", "--", "echo", "hi"); err != nil {
+		t.Fatalf("add command error = %v, stderr = %s", err, stderr)
+	}
+
+	stdout, stderr, err := runCLI(t, dbPath, "list", "--json")
+	if err != nil {
+		t.Fatalf("list command error = %v, stderr = %s", err, stderr)
+	}
+
+	var jobs []jobResponse
+	if err := json.Unmarshal([]byte(stdout), &jobs); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v\nstdout=%s", err, stdout)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("len(jobs) = %d, want %d", len(jobs), 1)
+	}
+	if jobs[0].MaxRuns == nil {
+		t.Fatal("jobs[0].MaxRuns = nil, want 3")
+	}
+	if *jobs[0].MaxRuns != 3 {
+		t.Fatalf("*jobs[0].MaxRuns = %d, want %d", *jobs[0].MaxRuns, 3)
+	}
+	if jobs[0].ScheduledRuns != 0 {
+		t.Fatalf("jobs[0].ScheduledRuns = %d, want %d", jobs[0].ScheduledRuns, 0)
 	}
 }
 
@@ -181,7 +219,7 @@ func TestEditPauseResumeRunAndDeleteJob(t *testing.T) {
 	}
 	jobID := jobs[0].ID
 
-	if _, stderr, err := runCLI(t, dbPath, "edit", jobID, "--name", "ping-hourly", "--interval", "1h", "--", "echo", "pang"); err != nil {
+	if _, stderr, err := runCLI(t, dbPath, "edit", jobID, "--name", "ping-hourly", "--interval", "1h", "--max-runs", "5", "--", "echo", "pang"); err != nil {
 		t.Fatalf("edit command error = %v, stderr = %s", err, stderr)
 	}
 	if _, stderr, err := runCLI(t, dbPath, "pause", jobID); err != nil {
@@ -207,6 +245,12 @@ func TestEditPauseResumeRunAndDeleteJob(t *testing.T) {
 	if jobs[0].ScheduleType != "interval" {
 		t.Fatalf("jobs[0].ScheduleType = %q, want %q", jobs[0].ScheduleType, "interval")
 	}
+	if jobs[0].MaxRuns == nil {
+		t.Fatal("jobs[0].MaxRuns = nil, want 5")
+	}
+	if *jobs[0].MaxRuns != 5 {
+		t.Fatalf("*jobs[0].MaxRuns = %d, want %d", *jobs[0].MaxRuns, 5)
+	}
 	if jobs[0].Status != "active" {
 		t.Fatalf("jobs[0].Status = %q, want %q", jobs[0].Status, "active")
 	}
@@ -224,6 +268,55 @@ func TestEditPauseResumeRunAndDeleteJob(t *testing.T) {
 	}
 	if len(jobs) != 0 {
 		t.Fatalf("len(jobs) after delete = %d, want %d", len(jobs), 0)
+	}
+}
+
+func TestAddJobRejectsMaxRunsForOneTime(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "callmeback.db")
+
+	_, _, err := runCLI(t, dbPath, "add", "once", "--in", "5m", "--max-runs", "2", "--", "echo", "later")
+	if err == nil {
+		t.Fatal("add command error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "--max-runs is only supported for --interval or --cron jobs") {
+		t.Fatalf("err = %q, want max-runs validation error", err)
+	}
+}
+
+func TestEditJobCanClearMaxRuns(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "callmeback.db")
+
+	if _, stderr, err := runCLI(t, dbPath, "add", "hourly", "--interval", "1h", "--max-runs", "3", "--", "echo", "hi"); err != nil {
+		t.Fatalf("add command error = %v, stderr = %s", err, stderr)
+	}
+
+	stdout, stderr, err := runCLI(t, dbPath, "list", "--json")
+	if err != nil {
+		t.Fatalf("list command error = %v, stderr = %s", err, stderr)
+	}
+
+	var jobs []jobResponse
+	if err := json.Unmarshal([]byte(stdout), &jobs); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v\nstdout=%s", err, stdout)
+	}
+
+	if _, stderr, err := runCLI(t, dbPath, "edit", jobs[0].ID, "--max-runs", "0"); err != nil {
+		t.Fatalf("edit command error = %v, stderr = %s", err, stderr)
+	}
+
+	stdout, stderr, err = runCLI(t, dbPath, "list", "--json")
+	if err != nil {
+		t.Fatalf("list command error = %v, stderr = %s", err, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &jobs); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v\nstdout=%s", err, stdout)
+	}
+	if jobs[0].MaxRuns != nil {
+		t.Fatalf("jobs[0].MaxRuns = %v, want nil", *jobs[0].MaxRuns)
 	}
 }
 

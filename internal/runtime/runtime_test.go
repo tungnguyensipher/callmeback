@@ -171,6 +171,96 @@ func TestRuntimeRunProcessesWorkUntilContextCancelled(t *testing.T) {
 	t.Fatal("runtime loop did not process the queued run before timeout")
 }
 
+func TestRuntimeAutoPausesLimitedRecurringJobs(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "callmeback.db"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	defer st.Close()
+
+	job, err := st.CreateJob(ctx, store.CreateJobParams{
+		Name:         "limited",
+		ScheduleType: store.ScheduleTypeInterval,
+		Schedule:     "1m",
+		MaxRuns:      intPtr(1),
+		Command:      []string{"/bin/sh", "-c", "printf limited"},
+	})
+	if err != nil {
+		t.Fatalf("CreateJob() error = %v", err)
+	}
+
+	rt, err := New(st, Options{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer rt.Close()
+
+	if err := rt.executeScheduledJob(ctx, job.ID); err != nil {
+		t.Fatalf("executeScheduledJob() error = %v", err)
+	}
+
+	got, err := st.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if got.ScheduledRuns != 1 {
+		t.Fatalf("got.ScheduledRuns = %d, want %d", got.ScheduledRuns, 1)
+	}
+	if got.Status != store.StatusPaused {
+		t.Fatalf("got.Status = %q, want %q", got.Status, store.StatusPaused)
+	}
+}
+
+func TestRuntimeManualRunsDoNotConsumeMaxRuns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "callmeback.db"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	defer st.Close()
+
+	job, err := st.CreateJob(ctx, store.CreateJobParams{
+		Name:         "manual-safe",
+		ScheduleType: store.ScheduleTypeCron,
+		Schedule:     "0 * * * *",
+		MaxRuns:      intPtr(2),
+		Command:      []string{"/bin/sh", "-c", "printf ok"},
+	})
+	if err != nil {
+		t.Fatalf("CreateJob() error = %v", err)
+	}
+
+	rt, err := New(st, Options{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer rt.Close()
+
+	if err := rt.executeJob(ctx, job, TriggerManual); err != nil {
+		t.Fatalf("executeJob() error = %v", err)
+	}
+
+	got, err := st.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if got.ScheduledRuns != 0 {
+		t.Fatalf("got.ScheduledRuns = %d, want %d", got.ScheduledRuns, 0)
+	}
+	if got.Status != store.StatusActive {
+		t.Fatalf("got.Status = %q, want %q", got.Status, store.StatusActive)
+	}
+}
+
 func statusPtr(status store.JobStatus) *store.JobStatus {
 	return &status
+}
+
+func intPtr(value int) *int {
+	return &value
 }

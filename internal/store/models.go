@@ -20,15 +20,17 @@ const (
 )
 
 type Job struct {
-	ID           string
-	Name         string
-	Profile      string
-	ScheduleType ScheduleType
-	Schedule     string
-	Command      []string
-	Status       JobStatus
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID            string
+	Name          string
+	Profile       string
+	ScheduleType  ScheduleType
+	Schedule      string
+	MaxRuns       *int
+	ScheduledRuns int64
+	Command       []string
+	Status        JobStatus
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type CreateJobParams struct {
@@ -36,16 +38,20 @@ type CreateJobParams struct {
 	Profile      string
 	ScheduleType ScheduleType
 	Schedule     string
+	MaxRuns      *int
 	Command      []string
 }
 
 type UpdateJobParams struct {
-	Name         *string
-	Profile      *string
-	ScheduleType *ScheduleType
-	Schedule     *string
-	Command      []string
-	Status       *JobStatus
+	Name          *string
+	Profile       *string
+	ScheduleType  *ScheduleType
+	Schedule      *string
+	MaxRuns       *int
+	MaxRunsSet    bool
+	ScheduledRuns *int64
+	Command       []string
+	Status        *JobStatus
 }
 
 type ListJobsParams struct {

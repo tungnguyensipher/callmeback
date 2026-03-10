@@ -159,11 +159,10 @@ func (r *Runtime) scheduleJob(job store.Job) (gocron.Job, error) {
 		return nil, err
 	}
 
-	jobCopy := job
 	scheduled, err := r.scheduler.NewJob(
 		definition,
 		gocron.NewTask(func() {
-			_ = r.executeJob(context.Background(), jobCopy, TriggerScheduled)
+			_ = r.executeScheduledJob(context.Background(), job.ID)
 		}),
 		gocron.WithName(job.Name),
 	)
@@ -172,6 +171,18 @@ func (r *Runtime) scheduleJob(job store.Job) (gocron.Job, error) {
 	}
 
 	return scheduled, nil
+}
+
+func (r *Runtime) executeScheduledJob(ctx context.Context, jobID string) error {
+	job, reserved, err := r.store.TryReserveScheduledRun(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	if !reserved {
+		return nil
+	}
+
+	return r.executeJob(ctx, job, TriggerScheduled)
 }
 
 func (r *Runtime) executeJob(ctx context.Context, job store.Job, trigger string) error {

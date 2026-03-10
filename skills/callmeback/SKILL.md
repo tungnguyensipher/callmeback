@@ -25,7 +25,7 @@ Use the binary to install or refresh itself when needed:
 
 ```bash
 callmeback update
-callmeback update --version 0.2.0
+callmeback update --version 0.3.0
 ```
 
 ## Common Tasks
@@ -36,7 +36,9 @@ Choose exactly one schedule flag:
 
 ```bash
 callmeback add backup --interval 15m -- ./backup.sh
+callmeback add backup-limited --interval 15m --max-runs 3 -- ./backup.sh
 callmeback add nightly --cron "0 2 * * *" -- /usr/bin/env bash -lc ./nightly.sh
+callmeback add nightly-limited --cron "0 2 * * *" --max-runs 10 -- /usr/bin/env bash -lc ./nightly.sh
 callmeback add once --at 2026-03-10T10:00:00Z -- echo hello
 callmeback add remind --in 2h --profile ops -- echo "ship it"
 ```
@@ -45,6 +47,7 @@ Rules to remember:
 
 - `--interval` and `--in` accept simple single-unit values like `30`, `5m`, `2h`, `2days`
 - `--at` must be RFC3339
+- `--max-runs` only applies to recurring `--interval` and `--cron` jobs; `0` clears the limit
 - jobs without `--profile` use `default`
 - command arguments must come after `--`
 
@@ -67,6 +70,7 @@ Important default:
 
 ```bash
 callmeback edit <job-id> --name backup-fast --interval 5m -- ./backup.sh --fast
+callmeback edit <job-id> --max-runs 0
 callmeback edit <job-id> --profile ops
 callmeback pause <job-id>
 callmeback resume <job-id>
@@ -103,6 +107,7 @@ Use the service subcommands instead of editing LaunchAgents or systemd files dir
 - Prefer `callmeback update` over custom download logic when the goal is to upgrade an installed binary
 - Prefer `callmeback version` for build metadata instead of inferring from tags or filenames
 - Use `callmeback list --json` before destructive changes so you can confirm the exact target job
+- `max_runs` counts scheduled executions only; manual `callmeback run <job-id>` does not consume it
 - Avoid direct database writes or manual service file edits unless the CLI cannot do the job
 
 ## References

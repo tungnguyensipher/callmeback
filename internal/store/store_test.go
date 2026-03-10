@@ -71,6 +71,12 @@ func TestStoreJobLifecycle(t *testing.T) {
 	if len(created.Command) != 2 {
 		t.Fatalf("CreateJob().Command len = %d, want %d", len(created.Command), 2)
 	}
+	if created.MaxRuns != nil {
+		t.Fatalf("CreateJob().MaxRuns = %v, want nil", *created.MaxRuns)
+	}
+	if created.ScheduledRuns != 0 {
+		t.Fatalf("CreateJob().ScheduledRuns = %d, want %d", created.ScheduledRuns, 0)
+	}
 
 	got, err := st.GetJob(ctx, created.ID)
 	if err != nil {
@@ -84,6 +90,8 @@ func TestStoreJobLifecycle(t *testing.T) {
 		Name:         stringPtr("backup-nightly"),
 		ScheduleType: scheduleTypePtr(ScheduleTypeInterval),
 		Schedule:     stringPtr("15m"),
+		MaxRuns:      intPtr(3),
+		MaxRunsSet:   true,
 		Command:      []string{"./backup.sh", "--nightly"},
 		Status:       statusPtr(StatusPaused),
 	})
@@ -96,6 +104,12 @@ func TestStoreJobLifecycle(t *testing.T) {
 	}
 	if updated.Status != StatusPaused {
 		t.Fatalf("UpdateJob().Status = %q, want %q", updated.Status, StatusPaused)
+	}
+	if updated.MaxRuns == nil {
+		t.Fatal("UpdateJob().MaxRuns = nil, want 3")
+	}
+	if *updated.MaxRuns != 3 {
+		t.Fatalf("*UpdateJob().MaxRuns = %d, want %d", *updated.MaxRuns, 3)
 	}
 
 	jobs, err := st.ListJobs(ctx, ListJobsParams{})
@@ -116,6 +130,116 @@ func TestStoreJobLifecycle(t *testing.T) {
 	}
 	if len(jobs) != 0 {
 		t.Fatalf("ListJobs() after delete len = %d, want %d", len(jobs), 0)
+	}
+}
+
+func TestStoreMaxRunsLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "callmeback.db")
+
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer st.Close()
+
+	job, err := st.CreateJob(ctx, CreateJobParams{
+		Name:         "limited",
+		ScheduleType: ScheduleTypeCron,
+		Schedule:     "0 * * * *",
+		MaxRuns:      intPtr(2),
+		Command:      []string{"echo", "tick"},
+	})
+	if err != nil {
+		t.Fatalf("CreateJob() error = %v", err)
+	}
+
+	if job.MaxRuns == nil || *job.MaxRuns != 2 {
+		t.Fatalf("CreateJob().MaxRuns = %v, want %d", job.MaxRuns, 2)
+	}
+	if job.ScheduledRuns != 0 {
+		t.Fatalf("CreateJob().ScheduledRuns = %d, want %d", job.ScheduledRuns, 0)
+	}
+
+	got, err := st.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if got.MaxRuns == nil || *got.MaxRuns != 2 {
+		t.Fatalf("GetJob().MaxRuns = %v, want %d", got.MaxRuns, 2)
+	}
+
+	updated, err := st.UpdateJob(ctx, job.ID, UpdateJobParams{
+		MaxRuns:       intPtr(4),
+		MaxRunsSet:    true,
+		ScheduledRuns: int64Ptr(1),
+	})
+	if err != nil {
+		t.Fatalf("UpdateJob() error = %v", err)
+	}
+	if updated.MaxRuns == nil || *updated.MaxRuns != 4 {
+		t.Fatalf("UpdateJob().MaxRuns = %v, want %d", updated.MaxRuns, 4)
+	}
+	if updated.ScheduledRuns != 1 {
+		t.Fatalf("UpdateJob().ScheduledRuns = %d, want %d", updated.ScheduledRuns, 1)
+	}
+
+	cleared, err := st.UpdateJob(ctx, job.ID, UpdateJobParams{
+		MaxRunsSet: true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateJob(clear max runs) error = %v", err)
+	}
+	if cleared.MaxRuns != nil {
+		t.Fatalf("UpdateJob(clear).MaxRuns = %v, want nil", *cleared.MaxRuns)
+	}
+}
+
+func TestTryReserveScheduledRunStopsAtLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "callmeback.db")
+
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer st.Close()
+
+	job, err := st.CreateJob(ctx, CreateJobParams{
+		Name:         "limited",
+		ScheduleType: ScheduleTypeInterval,
+		Schedule:     "1m",
+		MaxRuns:      intPtr(1),
+		Command:      []string{"echo", "hello"},
+	})
+	if err != nil {
+		t.Fatalf("CreateJob() error = %v", err)
+	}
+
+	reserved, ok, err := st.TryReserveScheduledRun(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("TryReserveScheduledRun() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("TryReserveScheduledRun() ok = false, want true")
+	}
+	if reserved.ScheduledRuns != 1 {
+		t.Fatalf("reserved.ScheduledRuns = %d, want %d", reserved.ScheduledRuns, 1)
+	}
+	if reserved.Status != StatusPaused {
+		t.Fatalf("reserved.Status = %q, want %q", reserved.Status, StatusPaused)
+	}
+
+	_, ok, err = st.TryReserveScheduledRun(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("TryReserveScheduledRun() second call error = %v", err)
+	}
+	if ok {
+		t.Fatal("TryReserveScheduledRun() second ok = true, want false")
 	}
 }
 
@@ -233,6 +357,14 @@ func scheduleTypePtr(value ScheduleType) *ScheduleType {
 }
 
 func statusPtr(value JobStatus) *JobStatus {
+	return &value
+}
+
+func intPtr(value int) *int {
+	return &value
+}
+
+func int64Ptr(value int64) *int64 {
 	return &value
 }
 

@@ -75,6 +75,7 @@ callmeback completion powershell > callmeback.ps1
 ## Features
 
 - `interval`, `onetime`, and `cron` jobs
+- `--max-runs` limits for recurring `interval` and `cron` jobs
 - `--in` shortcuts for one-time jobs and simple human durations like `5m`, `2h`, `2days`
 - SQLite persistence at `~/.callmeback/callmeback.db` by default
 - `CALLMEBACK_DB` override for custom database paths
@@ -87,8 +88,10 @@ callmeback completion powershell > callmeback.ps1
 
 ```bash
 callmeback add backup --interval 15m -- ./backup.sh
+callmeback add backup-limited --interval 15m --max-runs 3 -- ./backup.sh
 callmeback add heartbeat --interval 2days -- /usr/bin/env bash -lc ./heartbeat.sh
 callmeback add nightly --cron "0 2 * * *" -- /usr/bin/env bash -lc ./nightly.sh
+callmeback add nightly-limited --cron "0 2 * * *" --max-runs 10 -- /usr/bin/env bash -lc ./nightly.sh
 callmeback add once --at 2026-03-10T10:00:00Z -- echo hello
 callmeback add remind --in 2h --profile ops -- echo "ship it"
 
@@ -103,8 +106,9 @@ callmeback service install
 Edit and control jobs:
 
 ```bash
-callmeback edit <job-id> --name backup-fast --interval 5m -- ./backup.sh --fast
+callmeback edit <job-id> --name backup-fast --interval 5m --max-runs 5 -- ./backup.sh --fast
 callmeback edit <job-id> --profile ops
+callmeback edit <job-id> --max-runs 0
 callmeback pause <job-id>
 callmeback resume <job-id>
 callmeback run <job-id>
@@ -138,7 +142,7 @@ Update to the latest published release:
 
 ```bash
 callmeback update
-callmeback update --version 0.2.0
+callmeback update --version 0.3.0
 ```
 
 ## Storage
@@ -147,6 +151,8 @@ callmeback update --version 0.2.0
 - Override with: `CALLMEBACK_DB=/path/to/callmeback.db`
 - Jobs without an explicit profile are stored in `default`
 - `callmeback list` shows only the `default` profile unless you pass `--profile <name>`
+- `max_runs` counts scheduled executions only; manual `callmeback run <job-id>` requests do not consume the limit
+- recurring jobs auto-pause once `scheduled_runs` reaches `max_runs`
 
 ## Background Services
 

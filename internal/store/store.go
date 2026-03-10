@@ -43,6 +43,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureJobsMaxRunsColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &Store{db: db}, nil
 }
@@ -58,15 +62,17 @@ func (s *Store) Close() error {
 func (s *Store) CreateJob(ctx context.Context, params CreateJobParams) (Job, error) {
 	now := time.Now().UTC()
 	job := Job{
-		ID:           newID(),
-		Name:         params.Name,
-		Profile:      normalizeProfile(params.Profile),
-		ScheduleType: params.ScheduleType,
-		Schedule:     params.Schedule,
-		Command:      append([]string(nil), params.Command...),
-		Status:       StatusActive,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:            newID(),
+		Name:          params.Name,
+		Profile:       normalizeProfile(params.Profile),
+		ScheduleType:  params.ScheduleType,
+		Schedule:      params.Schedule,
+		MaxRuns:       normalizeMaxRuns(params.MaxRuns),
+		ScheduledRuns: 0,
+		Command:       append([]string(nil), params.Command...),
+		Status:        StatusActive,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	commandJSON, err := json.Marshal(job.Command)
@@ -76,13 +82,15 @@ func (s *Store) CreateJob(ctx context.Context, params CreateJobParams) (Job, err
 
 	_, err = s.db.ExecContext(
 		ctx,
-		`INSERT INTO jobs (id, name, profile, schedule_type, schedule, command_json, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO jobs (id, name, profile, schedule_type, schedule, max_runs, scheduled_runs, command_json, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.ID,
 		job.Name,
 		job.Profile,
 		job.ScheduleType,
 		job.Schedule,
+		nullableInt(job.MaxRuns),
+		job.ScheduledRuns,
 		string(commandJSON),
 		job.Status,
 		job.CreatedAt.Format(time.RFC3339Nano),
@@ -98,7 +106,7 @@ func (s *Store) CreateJob(ctx context.Context, params CreateJobParams) (Job, err
 func (s *Store) GetJob(ctx context.Context, id string) (Job, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT id, name, COALESCE(profile, ?), schedule_type, schedule, command_json, status, created_at, updated_at
+		`SELECT id, name, COALESCE(profile, ?), schedule_type, schedule, max_runs, COALESCE(scheduled_runs, 0), command_json, status, created_at, updated_at
 		 FROM jobs WHERE id = ?`,
 		DefaultProfile,
 		id,
@@ -113,7 +121,7 @@ func (s *Store) GetJob(ctx context.Context, id string) (Job, error) {
 }
 
 func (s *Store) ListJobs(ctx context.Context, params ListJobsParams) ([]Job, error) {
-	query := `SELECT id, name, COALESCE(profile, ?), schedule_type, schedule, command_json, status, created_at, updated_at
+	query := `SELECT id, name, COALESCE(profile, ?), schedule_type, schedule, max_runs, COALESCE(scheduled_runs, 0), command_json, status, created_at, updated_at
 		 FROM jobs`
 	args := []any{DefaultProfile}
 	if !params.AllProfiles {
@@ -160,11 +168,28 @@ func (s *Store) UpdateJob(ctx context.Context, id string, params UpdateJobParams
 	if params.Schedule != nil {
 		job.Schedule = *params.Schedule
 	}
+	scheduleChanged := params.ScheduleType != nil || params.Schedule != nil
+	if params.MaxRunsSet {
+		job.MaxRuns = normalizeMaxRuns(params.MaxRuns)
+	}
+	if params.ScheduledRuns != nil {
+		job.ScheduledRuns = *params.ScheduledRuns
+	}
+	if scheduleChanged && params.ScheduledRuns == nil {
+		job.ScheduledRuns = 0
+	}
+	if job.ScheduleType == ScheduleTypeOneTime {
+		job.MaxRuns = nil
+		job.ScheduledRuns = 0
+	}
 	if params.Command != nil {
 		job.Command = append([]string(nil), params.Command...)
 	}
 	if params.Status != nil {
 		job.Status = *params.Status
+	}
+	if hasReachedRecurringLimit(job) {
+		job.Status = StatusPaused
 	}
 	job.UpdatedAt = time.Now().UTC()
 
@@ -176,12 +201,14 @@ func (s *Store) UpdateJob(ctx context.Context, id string, params UpdateJobParams
 	_, err = s.db.ExecContext(
 		ctx,
 		`UPDATE jobs
-		 SET name = ?, profile = ?, schedule_type = ?, schedule = ?, command_json = ?, status = ?, updated_at = ?
+		 SET name = ?, profile = ?, schedule_type = ?, schedule = ?, max_runs = ?, scheduled_runs = ?, command_json = ?, status = ?, updated_at = ?
 		 WHERE id = ?`,
 		job.Name,
 		job.Profile,
 		job.ScheduleType,
 		job.Schedule,
+		nullableInt(job.MaxRuns),
+		job.ScheduledRuns,
 		string(commandJSON),
 		job.Status,
 		job.UpdatedAt.Format(time.RFC3339Nano),
@@ -197,6 +224,52 @@ func (s *Store) UpdateJob(ctx context.Context, id string, params UpdateJobParams
 func (s *Store) DeleteJob(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM jobs WHERE id = ?`, id)
 	return err
+}
+
+func (s *Store) TryReserveScheduledRun(ctx context.Context, jobID string) (Job, bool, error) {
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE jobs
+		 SET scheduled_runs = scheduled_runs + 1,
+		     status = CASE
+		       WHEN max_runs IS NOT NULL
+		         AND schedule_type IN (?, ?)
+		         AND scheduled_runs + 1 >= max_runs
+		       THEN ?
+		       ELSE status
+		     END,
+		     updated_at = ?
+		 WHERE id = ?
+		   AND status = ?
+		   AND schedule_type IN (?, ?)
+		   AND (max_runs IS NULL OR scheduled_runs < max_runs)`,
+		ScheduleTypeInterval,
+		ScheduleTypeCron,
+		StatusPaused,
+		updatedAt,
+		jobID,
+		StatusActive,
+		ScheduleTypeInterval,
+		ScheduleTypeCron,
+	)
+	if err != nil {
+		return Job{}, false, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Job{}, false, err
+	}
+	if rowsAffected == 0 {
+		return Job{}, false, nil
+	}
+
+	job, err := s.GetJob(ctx, jobID)
+	if err != nil {
+		return Job{}, false, err
+	}
+
+	return job, true, nil
 }
 
 func (s *Store) QueueRunRequest(ctx context.Context, jobID string) (RunRequest, error) {
@@ -338,6 +411,7 @@ type scanner func(dest ...any) error
 func scanJob(scan scanner) (Job, error) {
 	var (
 		job         Job
+		maxRuns     sql.NullInt64
 		commandJSON string
 		createdAt   string
 		updatedAt   string
@@ -349,6 +423,8 @@ func scanJob(scan scanner) (Job, error) {
 		&job.Profile,
 		&job.ScheduleType,
 		&job.Schedule,
+		&maxRuns,
+		&job.ScheduledRuns,
 		&commandJSON,
 		&job.Status,
 		&createdAt,
@@ -360,6 +436,10 @@ func scanJob(scan scanner) (Job, error) {
 
 	if err := json.Unmarshal([]byte(commandJSON), &job.Command); err != nil {
 		return Job{}, err
+	}
+	if maxRuns.Valid {
+		value := int(maxRuns.Int64)
+		job.MaxRuns = &value
 	}
 
 	job.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
@@ -405,11 +485,88 @@ func ensureJobsProfileColumn(db *sql.DB) error {
 	return err
 }
 
+func ensureJobsMaxRunsColumns(db *sql.DB) error {
+	hasMaxRuns := false
+	hasScheduledRuns := false
+
+	rows, err := db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return err
+		}
+		switch name {
+		case "max_runs":
+			hasMaxRuns = true
+		case "scheduled_runs":
+			hasScheduledRuns = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if !hasMaxRuns {
+		if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN max_runs INTEGER`); err != nil {
+			return err
+		}
+	}
+	if !hasScheduledRuns {
+		if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN scheduled_runs INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func normalizeProfile(profile string) string {
 	if profile == "" {
 		return DefaultProfile
 	}
 	return profile
+}
+
+func normalizeMaxRuns(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	if *value <= 0 {
+		return nil
+	}
+
+	normalized := *value
+	return &normalized
+}
+
+func nullableInt(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func hasReachedRecurringLimit(job Job) bool {
+	if job.MaxRuns == nil {
+		return false
+	}
+	if job.ScheduleType != ScheduleTypeInterval && job.ScheduleType != ScheduleTypeCron {
+		return false
+	}
+
+	return job.ScheduledRuns >= int64(*job.MaxRuns)
 }
 
 func scanRunRequest(scan scanner) (RunRequest, error) {

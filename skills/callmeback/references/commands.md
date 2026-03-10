@@ -6,7 +6,7 @@
 curl -fsSL https://raw.githubusercontent.com/tungnguyensipher/callmeback/main/install.sh | bash
 powershell -c "irm https://raw.githubusercontent.com/tungnguyensipher/callmeback/main/install.ps1 | iex"
 callmeback update
-callmeback update --version 0.2.0
+callmeback update --version 0.3.0
 callmeback version
 ```
 
@@ -14,13 +14,16 @@ callmeback version
 
 ```bash
 callmeback add backup --interval 15m -- ./backup.sh
+callmeback add backup-limited --interval 15m --max-runs 3 -- ./backup.sh
 callmeback add once --in 2h -- echo hello
 callmeback add nightly --cron "0 2 * * *" -- /usr/bin/env bash -lc ./nightly.sh
+callmeback add nightly-limited --cron "0 2 * * *" --max-runs 10 -- /usr/bin/env bash -lc ./nightly.sh
 
 callmeback list --json
 callmeback list --profile ops --json
 
 callmeback edit <job-id> --profile ops
+callmeback edit <job-id> --max-runs 0
 callmeback pause <job-id>
 callmeback resume <job-id>
 callmeback run <job-id>
@@ -45,3 +48,5 @@ callmeback service uninstall
 - `list` without `--profile` only shows `default`
 - `job_id` format: 16-character base62 string
 - Human durations are simple single-unit values such as `30`, `5m`, `2h`, `2days`
+- `--max-runs` only applies to recurring `interval` and `cron` jobs; `0` clears the limit
+- hitting `max_runs` auto-pauses the job, but manual `run` still works

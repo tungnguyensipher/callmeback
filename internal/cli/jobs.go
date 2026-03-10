@@ -14,13 +14,15 @@ import (
 )
 
 type jobResponse struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Profile      string   `json:"profile"`
-	ScheduleType string   `json:"schedule_type"`
-	Schedule     string   `json:"schedule"`
-	Command      []string `json:"command"`
-	Status       string   `json:"status"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Profile       string   `json:"profile"`
+	ScheduleType  string   `json:"schedule_type"`
+	Schedule      string   `json:"schedule"`
+	MaxRuns       *int     `json:"max_runs"`
+	ScheduledRuns int64    `json:"scheduled_runs"`
+	Command       []string `json:"command"`
+	Status        string   `json:"status"`
 }
 
 func newAddCommand(opts Options) *cobra.Command {
@@ -29,6 +31,7 @@ func newAddCommand(opts Options) *cobra.Command {
 		interval string
 		at       string
 		in       string
+		maxRuns  int
 		profile  string
 	)
 
@@ -38,6 +41,10 @@ func newAddCommand(opts Options) *cobra.Command {
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			scheduleType, schedule, err := resolveScheduleFlags(cronExpr, interval, at, in, true)
+			if err != nil {
+				return err
+			}
+			maxRunsValue, err := resolveMaxRuns(maxRuns, cmd.Flags().Changed("max-runs"), scheduleType)
 			if err != nil {
 				return err
 			}
@@ -58,6 +65,7 @@ func newAddCommand(opts Options) *cobra.Command {
 				Profile:      profile,
 				ScheduleType: scheduleType,
 				Schedule:     schedule,
+				MaxRuns:      maxRunsValue,
 				Command:      append([]string(nil), args[dashIndex:]...),
 			})
 			if err != nil {
@@ -73,6 +81,7 @@ func newAddCommand(opts Options) *cobra.Command {
 	cmd.Flags().StringVar(&interval, "interval", "", "Interval duration")
 	cmd.Flags().StringVar(&at, "at", "", "One-time RFC3339 timestamp")
 	cmd.Flags().StringVar(&in, "in", "", "One-time delay, like 5m or 2days")
+	cmd.Flags().IntVar(&maxRuns, "max-runs", 0, "Maximum scheduled runs for interval or cron jobs; 0 clears the limit")
 	cmd.Flags().StringVar(&profile, "profile", "", "Job profile scope")
 	return cmd
 }
@@ -119,6 +128,7 @@ func newEditCommand(opts Options) *cobra.Command {
 		interval string
 		at       string
 		in       string
+		maxRuns  int
 	)
 
 	cmd := &cobra.Command{
@@ -136,6 +146,17 @@ func newEditCommand(opts Options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dashIndex := cmd.ArgsLenAtDash()
 
+			st, err := openStore(opts)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+
+			existing, err := st.GetJob(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+
 			params := store.UpdateJobParams{}
 			if cmd.Flags().Changed("name") {
 				params.Name = &name
@@ -148,20 +169,25 @@ func newEditCommand(opts Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			effectiveScheduleType := existing.ScheduleType
 			if scheduleType != "" {
+				effectiveScheduleType = scheduleType
 				params.ScheduleType = &scheduleType
 				params.Schedule = &schedule
+			}
+
+			maxRunsValue, err := resolveMaxRuns(maxRuns, cmd.Flags().Changed("max-runs"), effectiveScheduleType)
+			if err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("max-runs") {
+				params.MaxRuns = maxRunsValue
+				params.MaxRunsSet = true
 			}
 
 			if dashIndex != -1 && len(args[dashIndex:]) > 0 {
 				params.Command = append([]string(nil), args[dashIndex:]...)
 			}
-
-			st, err := openStore(opts)
-			if err != nil {
-				return err
-			}
-			defer st.Close()
 
 			job, err := st.UpdateJob(cmd.Context(), args[0], params)
 			if err != nil {
@@ -179,6 +205,7 @@ func newEditCommand(opts Options) *cobra.Command {
 	cmd.Flags().StringVar(&interval, "interval", "", "Interval duration")
 	cmd.Flags().StringVar(&at, "at", "", "One-time RFC3339 timestamp")
 	cmd.Flags().StringVar(&in, "in", "", "One-time delay, like 5m or 2days")
+	cmd.Flags().IntVar(&maxRuns, "max-runs", 0, "Maximum scheduled runs for interval or cron jobs; 0 clears the limit")
 	return cmd
 }
 
@@ -316,6 +343,24 @@ func resolveScheduleFlags(cronExpr, interval, at, in string, required bool) (sto
 	return store.ScheduleTypeCron, cronExpr, nil
 }
 
+func resolveMaxRuns(value int, changed bool, scheduleType store.ScheduleType) (*int, error) {
+	if !changed {
+		return nil, nil
+	}
+	if value < 0 {
+		return nil, errors.New("--max-runs must be 0 or greater")
+	}
+	if scheduleType != store.ScheduleTypeInterval && scheduleType != store.ScheduleTypeCron {
+		return nil, errors.New("--max-runs is only supported for --interval or --cron jobs")
+	}
+	if value == 0 {
+		return nil, nil
+	}
+
+	resolved := value
+	return &resolved, nil
+}
+
 func writeJobsJSON(w io.Writer, jobs []store.Job) error {
 	response := make([]jobResponse, 0, len(jobs))
 	for _, job := range jobs {
@@ -329,19 +374,21 @@ func writeJobsJSON(w io.Writer, jobs []store.Job) error {
 
 func writeJobsTable(w io.Writer, jobs []store.Job) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ID\tNAME\tPROFILE\tTYPE\tSCHEDULE\tSTATUS\tCOMMAND"); err != nil {
+	if _, err := fmt.Fprintln(tw, "ID\tNAME\tPROFILE\tTYPE\tSCHEDULE\tMAX RUNS\tRUNS\tSTATUS\tCOMMAND"); err != nil {
 		return err
 	}
 
 	for _, job := range jobs {
 		if _, err := fmt.Fprintf(
 			tw,
-			"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			"%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			job.ID,
 			job.Name,
 			job.Profile,
 			job.ScheduleType,
 			job.Schedule,
+			formatMaxRuns(job.MaxRuns),
+			job.ScheduledRuns,
 			job.Status,
 			fmtCommand(job.Command),
 		); err != nil {
@@ -354,14 +401,31 @@ func writeJobsTable(w io.Writer, jobs []store.Job) error {
 
 func toJobResponse(job store.Job) jobResponse {
 	return jobResponse{
-		ID:           job.ID,
-		Name:         job.Name,
-		Profile:      job.Profile,
-		ScheduleType: string(job.ScheduleType),
-		Schedule:     job.Schedule,
-		Command:      append([]string(nil), job.Command...),
-		Status:       string(job.Status),
+		ID:            job.ID,
+		Name:          job.Name,
+		Profile:       job.Profile,
+		ScheduleType:  string(job.ScheduleType),
+		Schedule:      job.Schedule,
+		MaxRuns:       cloneInt(job.MaxRuns),
+		ScheduledRuns: job.ScheduledRuns,
+		Command:       append([]string(nil), job.Command...),
+		Status:        string(job.Status),
 	}
+}
+
+func formatMaxRuns(value *int) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *value)
+}
+
+func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func fmtCommand(parts []string) string {

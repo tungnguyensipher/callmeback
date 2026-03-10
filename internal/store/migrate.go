@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   profile TEXT NOT NULL DEFAULT 'default',
   schedule_type TEXT NOT NULL,
   schedule TEXT NOT NULL,
+  max_runs INTEGER,
+  scheduled_runs INTEGER NOT NULL DEFAULT 0,
   command_json TEXT NOT NULL,
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
