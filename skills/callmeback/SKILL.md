@@ -1,13 +1,13 @@
 ---
 name: callmeback
-description: Operate the local callmeback scheduler CLI and service for installation, updates, version checks, job creation, listing, editing, deletion, profile-scoped filtering, and service lifecycle management. Use when Codex needs to work with scheduled commands on this machine through the `callmeback` binary, inspect machine-readable scheduler state, or automate scheduler setup and maintenance.
+description: Use when an AI agent needs to handle requests like "schedule task", "remind me", "run every hour", "set up a cron job", "run this command later", or "list scheduled jobs" with the local `callmeback` CLI, including one-time, interval, cron, and profile-scoped command scheduling on this machine.
 ---
 
 # Callmeback
 
 ## Overview
 
-Use `callmeback` as the single control surface for the local scheduler: install or update the binary, inspect version/build metadata, manage jobs, and control the background service.
+Use `callmeback` as the single control surface for the local scheduler: create one-time, interval, and cron jobs that run arbitrary commands, inspect scheduler state, and manage those jobs safely.
 
 Prefer the CLI over direct SQLite edits. Use `list --json` when another agent or script needs reliable structured output.
 
