@@ -1,0 +1,4 @@
+interface:
+  display_name: "Callmeback"
+  short_description: "Operate the callmeback scheduler CLI."
+  default_prompt: "Use $callmeback to operate the local scheduler: inspect version and state, manage jobs and profiles, and control or update the installed service."
