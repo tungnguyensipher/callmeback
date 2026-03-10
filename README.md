@@ -22,14 +22,14 @@ Build from source:
 go install github.com/tungnguyensipher/callmeback/cmd/callmeback@latest
 ```
 
-## Codex Skill
+## Skill
 
-This repo also ships a local Codex skill for operating `callmeback`.
+This repo also ships a skill for operating `callmeback`.
 
 Install it with the `skills` CLI:
 
 ```bash
-npx skills add https://github.com/tungnguyensipher/callmeback --skill callmeback
+npx skills add tungnguyensipher/callmeback
 ```
 
 ## Completion
