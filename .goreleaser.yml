@@ -16,6 +16,12 @@ builds:
         goarch: arm64
     main: ./cmd/callmeback
     binary: callmeback
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/tungnguyensipher/callmeback/internal/buildinfo.Version={{ .Version }}
+        -X github.com/tungnguyensipher/callmeback/internal/buildinfo.Commit={{ .Commit }}
+        -X github.com/tungnguyensipher/callmeback/internal/buildinfo.BuildDate={{ .Date }}
 
 archives:
   - id: callmeback

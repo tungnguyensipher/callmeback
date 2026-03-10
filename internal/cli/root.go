@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/tungnguyensipher/callmeback/internal/config"
+	"github.com/tungnguyensipher/callmeback/internal/selfupdate"
 	"github.com/tungnguyensipher/callmeback/internal/store"
 
 	"github.com/spf13/cobra"
@@ -17,6 +18,8 @@ type Options struct {
 	Stdout            io.Writer
 	Stderr            io.Writer
 	newServiceManager func() (serviceManager, error)
+	runSelfUpdate     func(context.Context, selfupdate.Config) (selfupdate.Result, error)
+	executablePath    func() (string, error)
 }
 
 func NewRootCommand(opts Options) *cobra.Command {
@@ -46,6 +49,8 @@ func NewRootCommand(opts Options) *cobra.Command {
 	cmd.AddCommand(newStartCommand(opts))
 	cmd.AddCommand(newServiceCommand(opts))
 	cmd.AddCommand(newServiceRunCommand(opts))
+	cmd.AddCommand(newUpdateCommand(opts))
+	cmd.AddCommand(newVersionCommand())
 
 	return cmd
 }

@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -22,7 +24,15 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Generate build metadata
+        run: |
+          echo VERSION=$(git describe --tags --always --dirty) >> "$GITHUB_ENV"
+          echo COMMIT=$(git rev-parse --short HEAD) >> "$GITHUB_ENV"
+          echo BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) >> "$GITHUB_ENV"
+
       - name: Build
         run: |
-          go build -o test-output ./cmd/callmeback
+          go build \
+            -ldflags "-X github.com/tungnguyensipher/callmeback/internal/buildinfo.Version=${VERSION} -X github.com/tungnguyensipher/callmeback/internal/buildinfo.Commit=${COMMIT} -X github.com/tungnguyensipher/callmeback/internal/buildinfo.BuildDate=${BUILD_DATE}" \
+            -o test-output ./cmd/callmeback
           rm -f test-output
