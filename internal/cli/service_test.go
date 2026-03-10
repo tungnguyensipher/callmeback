@@ -9,15 +9,6 @@ import (
 func TestServiceLifecycleCommands(t *testing.T) {
 	t.Parallel()
 
-	manager := &fakeServiceManager{}
-	opts := Options{
-		Stdout: &bytes.Buffer{},
-		Stderr: &bytes.Buffer{},
-		newServiceManager: func() (serviceManager, error) {
-			return manager, nil
-		},
-	}
-
 	cases := []struct {
 		name string
 		args []string
@@ -33,6 +24,15 @@ func TestServiceLifecycleCommands(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
+			manager := &fakeServiceManager{}
+			opts := Options{
+				Stdout: &bytes.Buffer{},
+				Stderr: &bytes.Buffer{},
+				newServiceManager: func() (serviceManager, error) {
+					return manager, nil
+				},
+			}
 
 			cmd := NewRootCommand(opts)
 			cmd.SetArgs(tt.args)

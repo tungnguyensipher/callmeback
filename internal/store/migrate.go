@@ -4,6 +4,7 @@ const schema = `
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  profile TEXT NOT NULL DEFAULT 'default',
   schedule_type TEXT NOT NULL,
   schedule TEXT NOT NULL,
   command_json TEXT NOT NULL,

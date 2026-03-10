@@ -7,6 +7,38 @@ import (
 	"time"
 )
 
+func TestCreateJobGeneratesBase62ID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "callmeback.db")
+
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer st.Close()
+
+	job, err := st.CreateJob(ctx, CreateJobParams{
+		Name:         "base62-id",
+		ScheduleType: ScheduleTypeInterval,
+		Schedule:     "15m",
+		Command:      []string{"echo", "hello"},
+	})
+	if err != nil {
+		t.Fatalf("CreateJob() error = %v", err)
+	}
+
+	if len(job.ID) != 16 {
+		t.Fatalf("len(job.ID) = %d, want %d", len(job.ID), 16)
+	}
+	for _, ch := range job.ID {
+		if !isBase62Rune(ch) {
+			t.Fatalf("job.ID = %q contains non-base62 character %q", job.ID, ch)
+		}
+	}
+}
+
 func TestStoreJobLifecycle(t *testing.T) {
 	t.Parallel()
 
@@ -32,6 +64,9 @@ func TestStoreJobLifecycle(t *testing.T) {
 
 	if created.Name != "backup" {
 		t.Fatalf("CreateJob().Name = %q, want %q", created.Name, "backup")
+	}
+	if created.Profile != DefaultProfile {
+		t.Fatalf("CreateJob().Profile = %q, want %q", created.Profile, DefaultProfile)
 	}
 	if len(created.Command) != 2 {
 		t.Fatalf("CreateJob().Command len = %d, want %d", len(created.Command), 2)
@@ -63,7 +98,7 @@ func TestStoreJobLifecycle(t *testing.T) {
 		t.Fatalf("UpdateJob().Status = %q, want %q", updated.Status, StatusPaused)
 	}
 
-	jobs, err := st.ListJobs(ctx)
+	jobs, err := st.ListJobs(ctx, ListJobsParams{})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
@@ -75,12 +110,66 @@ func TestStoreJobLifecycle(t *testing.T) {
 		t.Fatalf("DeleteJob() error = %v", err)
 	}
 
-	jobs, err = st.ListJobs(ctx)
+	jobs, err = st.ListJobs(ctx, ListJobsParams{})
 	if err != nil {
 		t.Fatalf("ListJobs() after delete error = %v", err)
 	}
 	if len(jobs) != 0 {
 		t.Fatalf("ListJobs() after delete len = %d, want %d", len(jobs), 0)
+	}
+}
+
+func TestStoreListJobsFiltersByProfile(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "callmeback.db")
+
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer st.Close()
+
+	if _, err := st.CreateJob(ctx, CreateJobParams{
+		Name:         "default-job",
+		ScheduleType: ScheduleTypeInterval,
+		Schedule:     "15m",
+		Command:      []string{"echo", "default"},
+	}); err != nil {
+		t.Fatalf("CreateJob(default) error = %v", err)
+	}
+
+	if _, err := st.CreateJob(ctx, CreateJobParams{
+		Name:         "ops-job",
+		Profile:      "ops",
+		ScheduleType: ScheduleTypeInterval,
+		Schedule:     "30m",
+		Command:      []string{"echo", "ops"},
+	}); err != nil {
+		t.Fatalf("CreateJob(ops) error = %v", err)
+	}
+
+	defaultJobs, err := st.ListJobs(ctx, ListJobsParams{Profile: DefaultProfile})
+	if err != nil {
+		t.Fatalf("ListJobs(default) error = %v", err)
+	}
+	if len(defaultJobs) != 1 {
+		t.Fatalf("ListJobs(default) len = %d, want %d", len(defaultJobs), 1)
+	}
+	if defaultJobs[0].Profile != DefaultProfile {
+		t.Fatalf("ListJobs(default)[0].Profile = %q, want %q", defaultJobs[0].Profile, DefaultProfile)
+	}
+
+	opsJobs, err := st.ListJobs(ctx, ListJobsParams{Profile: "ops"})
+	if err != nil {
+		t.Fatalf("ListJobs(ops) error = %v", err)
+	}
+	if len(opsJobs) != 1 {
+		t.Fatalf("ListJobs(ops) len = %d, want %d", len(opsJobs), 1)
+	}
+	if opsJobs[0].Name != "ops-job" {
+		t.Fatalf("ListJobs(ops)[0].Name = %q, want %q", opsJobs[0].Name, "ops-job")
 	}
 }
 
@@ -145,4 +234,17 @@ func scheduleTypePtr(value ScheduleType) *ScheduleType {
 
 func statusPtr(value JobStatus) *JobStatus {
 	return &value
+}
+
+func isBase62Rune(ch rune) bool {
+	switch {
+	case ch >= '0' && ch <= '9':
+		return true
+	case ch >= 'a' && ch <= 'z':
+		return true
+	case ch >= 'A' && ch <= 'Z':
+		return true
+	default:
+		return false
+	}
 }

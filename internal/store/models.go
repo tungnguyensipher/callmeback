@@ -2,6 +2,8 @@ package store
 
 import "time"
 
+const DefaultProfile = "default"
+
 type ScheduleType string
 
 const (
@@ -20,6 +22,7 @@ const (
 type Job struct {
 	ID           string
 	Name         string
+	Profile      string
 	ScheduleType ScheduleType
 	Schedule     string
 	Command      []string
@@ -30,6 +33,7 @@ type Job struct {
 
 type CreateJobParams struct {
 	Name         string
+	Profile      string
 	ScheduleType ScheduleType
 	Schedule     string
 	Command      []string
@@ -37,10 +41,16 @@ type CreateJobParams struct {
 
 type UpdateJobParams struct {
 	Name         *string
+	Profile      *string
 	ScheduleType *ScheduleType
 	Schedule     *string
 	Command      []string
 	Status       *JobStatus
+}
+
+type ListJobsParams struct {
+	Profile     string
+	AllProfiles bool
 }
 
 type RunRequest struct {

@@ -16,6 +16,7 @@ import (
 type jobResponse struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
+	Profile      string   `json:"profile"`
 	ScheduleType string   `json:"schedule_type"`
 	Schedule     string   `json:"schedule"`
 	Command      []string `json:"command"`
@@ -27,6 +28,8 @@ func newAddCommand(opts Options) *cobra.Command {
 		cronExpr string
 		interval string
 		at       string
+		in       string
+		profile  string
 	)
 
 	cmd := &cobra.Command{
@@ -34,7 +37,7 @@ func newAddCommand(opts Options) *cobra.Command {
 		Short: "Add a job",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scheduleType, schedule, err := resolveScheduleFlags(cronExpr, interval, at, true)
+			scheduleType, schedule, err := resolveScheduleFlags(cronExpr, interval, at, in, true)
 			if err != nil {
 				return err
 			}
@@ -52,6 +55,7 @@ func newAddCommand(opts Options) *cobra.Command {
 
 			job, err := st.CreateJob(cmd.Context(), store.CreateJobParams{
 				Name:         args[0],
+				Profile:      profile,
 				ScheduleType: scheduleType,
 				Schedule:     schedule,
 				Command:      append([]string(nil), args[dashIndex:]...),
@@ -68,11 +72,16 @@ func newAddCommand(opts Options) *cobra.Command {
 	cmd.Flags().StringVar(&cronExpr, "cron", "", "Cron expression")
 	cmd.Flags().StringVar(&interval, "interval", "", "Interval duration")
 	cmd.Flags().StringVar(&at, "at", "", "One-time RFC3339 timestamp")
+	cmd.Flags().StringVar(&in, "in", "", "One-time delay, like 5m or 2days")
+	cmd.Flags().StringVar(&profile, "profile", "", "Job profile scope")
 	return cmd
 }
 
 func newListCommand(opts Options) *cobra.Command {
-	var jsonOutput bool
+	var (
+		jsonOutput bool
+		profile    string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -84,7 +93,7 @@ func newListCommand(opts Options) *cobra.Command {
 			}
 			defer st.Close()
 
-			jobs, err := st.ListJobs(cmd.Context())
+			jobs, err := st.ListJobs(cmd.Context(), store.ListJobsParams{Profile: profile})
 			if err != nil {
 				return err
 			}
@@ -98,15 +107,18 @@ func newListCommand(opts Options) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Render machine-readable JSON")
+	cmd.Flags().StringVar(&profile, "profile", "", "Only list jobs in this profile")
 	return cmd
 }
 
 func newEditCommand(opts Options) *cobra.Command {
 	var (
 		name     string
+		profile  string
 		cronExpr string
 		interval string
 		at       string
+		in       string
 	)
 
 	cmd := &cobra.Command{
@@ -128,8 +140,11 @@ func newEditCommand(opts Options) *cobra.Command {
 			if cmd.Flags().Changed("name") {
 				params.Name = &name
 			}
+			if cmd.Flags().Changed("profile") {
+				params.Profile = &profile
+			}
 
-			scheduleType, schedule, err := resolveScheduleFlags(cronExpr, interval, at, false)
+			scheduleType, schedule, err := resolveScheduleFlags(cronExpr, interval, at, in, false)
 			if err != nil {
 				return err
 			}
@@ -159,9 +174,11 @@ func newEditCommand(opts Options) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Override the job name")
+	cmd.Flags().StringVar(&profile, "profile", "", "Override the job profile scope")
 	cmd.Flags().StringVar(&cronExpr, "cron", "", "Cron expression")
 	cmd.Flags().StringVar(&interval, "interval", "", "Interval duration")
 	cmd.Flags().StringVar(&at, "at", "", "One-time RFC3339 timestamp")
+	cmd.Flags().StringVar(&in, "in", "", "One-time delay, like 5m or 2days")
 	return cmd
 }
 
@@ -250,7 +267,7 @@ func newStatusCommand(opts Options, use string, status store.JobStatus) *cobra.C
 	return cmd
 }
 
-func resolveScheduleFlags(cronExpr, interval, at string, required bool) (store.ScheduleType, string, error) {
+func resolveScheduleFlags(cronExpr, interval, at, in string, required bool) (store.ScheduleType, string, error) {
 	count := 0
 	if cronExpr != "" {
 		count++
@@ -261,28 +278,39 @@ func resolveScheduleFlags(cronExpr, interval, at string, required bool) (store.S
 	if at != "" {
 		count++
 	}
+	if in != "" {
+		count++
+	}
 
 	if count == 0 {
 		if required {
-			return "", "", errors.New("one of --cron, --interval, or --at is required")
+			return "", "", errors.New("one of --cron, --interval, --at, or --in is required")
 		}
 		return "", "", nil
 	}
 	if count > 1 {
-		return "", "", errors.New("only one of --cron, --interval, or --at may be set")
+		return "", "", errors.New("only one of --cron, --interval, --at, or --in may be set")
 	}
 
 	if interval != "" {
-		if _, err := time.ParseDuration(interval); err != nil {
+		duration, err := parseSimpleDuration(interval)
+		if err != nil {
 			return "", "", fmt.Errorf("invalid interval: %w", err)
 		}
-		return store.ScheduleTypeInterval, interval, nil
+		return store.ScheduleTypeInterval, duration.String(), nil
 	}
 	if at != "" {
 		if _, err := time.Parse(time.RFC3339, at); err != nil {
 			return "", "", fmt.Errorf("invalid time for --at: %w", err)
 		}
 		return store.ScheduleTypeOneTime, at, nil
+	}
+	if in != "" {
+		duration, err := parseSimpleDuration(in)
+		if err != nil {
+			return "", "", fmt.Errorf("invalid duration for --in: %w", err)
+		}
+		return store.ScheduleTypeOneTime, time.Now().UTC().Add(duration).Format(time.RFC3339), nil
 	}
 
 	return store.ScheduleTypeCron, cronExpr, nil
@@ -301,16 +329,17 @@ func writeJobsJSON(w io.Writer, jobs []store.Job) error {
 
 func writeJobsTable(w io.Writer, jobs []store.Job) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ID\tNAME\tTYPE\tSCHEDULE\tSTATUS\tCOMMAND"); err != nil {
+	if _, err := fmt.Fprintln(tw, "ID\tNAME\tPROFILE\tTYPE\tSCHEDULE\tSTATUS\tCOMMAND"); err != nil {
 		return err
 	}
 
 	for _, job := range jobs {
 		if _, err := fmt.Fprintf(
 			tw,
-			"%s\t%s\t%s\t%s\t%s\t%s\n",
+			"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			job.ID,
 			job.Name,
+			job.Profile,
 			job.ScheduleType,
 			job.Schedule,
 			job.Status,
@@ -327,6 +356,7 @@ func toJobResponse(job store.Job) jobResponse {
 	return jobResponse{
 		ID:           job.ID,
 		Name:         job.Name,
+		Profile:      job.Profile,
 		ScheduleType: string(job.ScheduleType),
 		Schedule:     job.Schedule,
 		Command:      append([]string(nil), job.Command...),

@@ -53,7 +53,7 @@ func (r *Runtime) Close() error {
 }
 
 func (r *Runtime) Reconcile(ctx context.Context) error {
-	jobs, err := r.store.ListJobs(ctx)
+	jobs, err := r.store.ListJobs(ctx, store.ListJobsParams{AllProfiles: true})
 	if err != nil {
 		return err
 	}

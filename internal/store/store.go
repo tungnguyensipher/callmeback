@@ -4,15 +4,21 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
+)
+
+const (
+	jobIDAlphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	jobIDLength   = 16
 )
 
 type Store struct {
@@ -33,6 +39,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureJobsProfileColumn(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &Store{db: db}, nil
 }
@@ -50,6 +60,7 @@ func (s *Store) CreateJob(ctx context.Context, params CreateJobParams) (Job, err
 	job := Job{
 		ID:           newID(),
 		Name:         params.Name,
+		Profile:      normalizeProfile(params.Profile),
 		ScheduleType: params.ScheduleType,
 		Schedule:     params.Schedule,
 		Command:      append([]string(nil), params.Command...),
@@ -65,10 +76,11 @@ func (s *Store) CreateJob(ctx context.Context, params CreateJobParams) (Job, err
 
 	_, err = s.db.ExecContext(
 		ctx,
-		`INSERT INTO jobs (id, name, schedule_type, schedule, command_json, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO jobs (id, name, profile, schedule_type, schedule, command_json, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.ID,
 		job.Name,
+		job.Profile,
 		job.ScheduleType,
 		job.Schedule,
 		string(commandJSON),
@@ -86,8 +98,9 @@ func (s *Store) CreateJob(ctx context.Context, params CreateJobParams) (Job, err
 func (s *Store) GetJob(ctx context.Context, id string) (Job, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT id, name, schedule_type, schedule, command_json, status, created_at, updated_at
+		`SELECT id, name, COALESCE(profile, ?), schedule_type, schedule, command_json, status, created_at, updated_at
 		 FROM jobs WHERE id = ?`,
+		DefaultProfile,
 		id,
 	)
 
@@ -99,13 +112,19 @@ func (s *Store) GetJob(ctx context.Context, id string) (Job, error) {
 	return job, nil
 }
 
-func (s *Store) ListJobs(ctx context.Context) ([]Job, error) {
-	rows, err := s.db.QueryContext(
-		ctx,
-		`SELECT id, name, schedule_type, schedule, command_json, status, created_at, updated_at
-		 FROM jobs
-		 ORDER BY created_at ASC`,
-	)
+func (s *Store) ListJobs(ctx context.Context, params ListJobsParams) ([]Job, error) {
+	query := `SELECT id, name, COALESCE(profile, ?), schedule_type, schedule, command_json, status, created_at, updated_at
+		 FROM jobs`
+	args := []any{DefaultProfile}
+	if !params.AllProfiles {
+		query += `
+		 WHERE COALESCE(profile, ?) = ?`
+		args = append(args, DefaultProfile, normalizeProfile(params.Profile))
+	}
+	query += `
+		 ORDER BY created_at ASC`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +151,9 @@ func (s *Store) UpdateJob(ctx context.Context, id string, params UpdateJobParams
 	if params.Name != nil {
 		job.Name = *params.Name
 	}
+	if params.Profile != nil {
+		job.Profile = normalizeProfile(*params.Profile)
+	}
 	if params.ScheduleType != nil {
 		job.ScheduleType = *params.ScheduleType
 	}
@@ -154,9 +176,10 @@ func (s *Store) UpdateJob(ctx context.Context, id string, params UpdateJobParams
 	_, err = s.db.ExecContext(
 		ctx,
 		`UPDATE jobs
-		 SET name = ?, schedule_type = ?, schedule = ?, command_json = ?, status = ?, updated_at = ?
+		 SET name = ?, profile = ?, schedule_type = ?, schedule = ?, command_json = ?, status = ?, updated_at = ?
 		 WHERE id = ?`,
 		job.Name,
+		job.Profile,
 		job.ScheduleType,
 		job.Schedule,
 		string(commandJSON),
@@ -323,6 +346,7 @@ func scanJob(scan scanner) (Job, error) {
 	err := scan(
 		&job.ID,
 		&job.Name,
+		&job.Profile,
 		&job.ScheduleType,
 		&job.Schedule,
 		&commandJSON,
@@ -348,6 +372,44 @@ func scanJob(scan scanner) (Job, error) {
 	}
 
 	return job, nil
+}
+
+func ensureJobsProfileColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return err
+		}
+		if name == "profile" {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`ALTER TABLE jobs ADD COLUMN profile TEXT NOT NULL DEFAULT 'default'`)
+	return err
+}
+
+func normalizeProfile(profile string) string {
+	if profile == "" {
+		return DefaultProfile
+	}
+	return profile
 }
 
 func scanRunRequest(scan scanner) (RunRequest, error) {
@@ -423,12 +485,19 @@ func scanJobRun(scan scanner) (JobRun, error) {
 }
 
 func newID() string {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		panic(fmt.Errorf("generate job id: %w", err))
+	var builder strings.Builder
+	builder.Grow(jobIDLength)
+
+	max := big.NewInt(int64(len(jobIDAlphabet)))
+	for i := 0; i < jobIDLength; i++ {
+		index, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			panic(fmt.Errorf("generate job id: %w", err))
+		}
+		builder.WriteByte(jobIDAlphabet[index.Int64()])
 	}
 
-	return hex.EncodeToString(buf)
+	return builder.String()
 }
 
 func IsNotFound(err error) bool {
